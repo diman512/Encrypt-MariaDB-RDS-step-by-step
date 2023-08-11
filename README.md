@@ -1,1 +1,0 @@
-# Encrypt-MariaDB-RDS-step-by-step

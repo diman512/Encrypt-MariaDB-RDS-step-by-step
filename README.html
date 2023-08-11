@@ -1,0 +1,89 @@
+Encrypt MariaDB RDS step-by-step
+Security should be at the forefront of our minds throughout every stage of the development process. From the initial design to the final implementation, safeguarding your data is paramount. If you're facing a situation similar to mine, where some old MariaDB RDS  instances are not encrypted should be encrypt, you probably couldn't find a one guild to help you through the process. So I gathered all the needed steps to one guide and wrote it here. please feel free to reach out to me for any question or better suggestion
+On Master - The original RDS:
+
+1. Set the retention to 24 hours
+
+call mysql.rds_set_configuration('binlog retention hours', 24);
+This command is important as it makes sure that the retention of the binlog files are set to 24 hours( default is NULL) otherwise the GTID that you will get is valid for the life time of the file - up to 5min if not much activities. You can see the current config by running the following command:
+CALL mysql.rds_show_configuration;
+
+2. Set the the master RDS to read-only or bock temporary traffic to it, here are commands to set it as a read-only
+mysql> FLUSH TABLES WITH READ LOCK;
+mysql> SET GLOBAL read_only = ON;
+
+3.  Create a GTID and make a note for it
+
+mysql> SELECT @@gtid_current_pos;
+This GTID is the mark where you want to start replication. remember that you started from a snapshot so they are identical 
+4. revers the read-only
+mysql> SET GLOBAL read_only = OFF;
+mysql> UNLOCK TABLES;
+5. create credentials for the replication with the right permissions
+CREATE USER '__USER__'@'%' IDENTIFIED BY '__PASSWORD__';
+GRANT REPLICATION CLIENT, REPLICATION SLAVE ON *.* TO '__USER__'@'%';
+change __user__ and __password__ to fit your needs
+6. create a snapshot of the master by right clicking the instances -> take snapshot
+7. from the left menu go to snapshots, locate your newly created snapshot then choose it and choose - copy snapshot
+8. Encrypt your newly copied snapshot (now is the type to encrypt)
+as you can see the encrypt option is now available for us to tick 
+9. Restore DB
+Right click on the new snapshot and now let's restore the database
+make sure to do the right changes for the VPC, security groups and parameter group are all set. make sure also to decide if you want the instances private or public. I will leave all theses details for you to decide.
+10. upgrade for the last minor image 
+go back to database and right click your new instance - update now
+you can run some CLI commands to check what available for you image and what available specifically in your region as it defer from region to another
+[cloudshell-user@ip~]$ aws rds describe-db-engine-versions \
+> - engine mariadb \
+> - engine-version 10.6.8 \
+> - query "DBEngineVersions[*].ValidUpgradeTarget[*].{EngineVersion:EngineVersion}" - output text
+10.6.10
+10.6.11
+10.6.12
+10.6.13
+10.6.14
+[cloudshell-user@ip~]$ aws rds describe-db-engine-versions \
+> - engine mariadb \
+> - engine-version 10.6.8 \
+> - region eu-west-2 \
+> - query "DBEngineVersions[*].ValidUpgradeTarget[*].{AutoUpgrade:AutoUpgrade,EngineVersion:EngineVersion}" \
+> - output text
+True 10.6.10
+False 10.6.11
+False 10.6.12
+False 10.6.13
+False 10.6.14
+11. Security Group. 
+Edit or create a new security group with a rule to accept traffic from the the newly created RDS to the original master via port 3306
+On Slave - The encrypted RDS
+12. Time for replication
+CALL mysql.rds_set_external_master_gtid ('MASTER_URL', 3306, 'USER', 'PASSWPRD', 'GTID', 1);
+CALL mysql.rds_start_replication;
+master_url: the the rds endpoint of the master instance
+User: is the user that we created in step 5
+password: is the password for that user
+GTID: is the output we got on step 3
+1 is for ssl encryption at transit of the data between instances, 0 for clear-text
+13. Stop replication after moving to the new endpoint
+CALL mysql.rds_stop_replication;
+CALL mysql.rds_reset_external_master;
+If you did all the steps, it should work with no issues, but you always can check the status by running the following commands:
+on master:
+CALL mysql.rds_stop_replication;
+CALL mysql.rds_reset_external_master;
+CALL mysql.rds_show_configuration;
+SHOW GRANTS FOR USER;
+show variables like '%binlog%'; 
+show master logs;
+show master status;
+on slave:
+show slave status \G;
+
+Documentation
+https://aws.amazon.com/blogs/database/performing-major-version-upgrades-for-amazon-aurora-mysql-with-minimum-downtime/
+https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/blue-green-deployments.html
+https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/blue-green-deployments-overview.html
+https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/blue-green-deployments-creating.html
+https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/MariaDB.Procedural.Replication.GTID.html
+https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/mysql-stored-proc-replicating.html
+https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/mysql-stored-proc-configuring.html
